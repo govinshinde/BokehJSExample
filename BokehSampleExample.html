@@ -1,0 +1,370 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <script src="https://code.jquery.com/jquery-1.10.2.js"></script>
+  <script src="https://code.jquery.com/ui/1.12.1/jquery-ui.js"></script>
+  <script src="https://cdn.bokeh.org/bokeh/release/bokeh-2.0.2.min.js"></script>
+  <script src="https://cdn.bokeh.org/bokeh/release/bokeh-widgets-2.0.2.min.js"></script>
+  <script src="https://cdn.bokeh.org/bokeh/release/bokeh-tables-2.0.2.min.js"></script>
+  <script src="https://cdn.bokeh.org/bokeh/release/bokeh-api-2.0.2.min.js"></script>
+  <script src="https://cdn.bokeh.org/bokeh/release/bokeh-gl-2.0.2.min.js"></script>
+
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      margin: 20px;
+    }
+
+    button {
+      padding: 10px;
+      margin: 5px;
+      cursor: pointer;
+    }
+
+    table {
+      margin-top: 20px;
+      border-collapse: collapse;
+      width: 100%;
+    }
+
+    table, th, td {
+      border: 1px solid #ddd;
+    }
+
+    th, td {
+      padding: 10px;
+      text-align: left;
+    }
+
+    #sortable1, #sortable2 {
+      border: 1px solid #ddd;
+      width: 50%;
+      min-height: 90%;
+      margin: 0;
+      padding: 1px;
+      float: left;
+      margin-right: 8px;
+      background: white;
+      list-style-type: none;
+    }
+
+    #sortable1 li, #sortable2 li {
+      margin: 5px;
+      padding: 10px;
+      font-size: 1.2em;
+      width: 90%;
+      background: #d5eafc;
+      border: 1px solid #ccc;
+      cursor: move;
+    }
+
+    #sortable1 li:hover, #sortable2 li:hover {
+      background: #b3d9ff;
+      transition: background 0.3s ease;
+    }
+
+    #bokeh-table {
+      margin-top: 20px;
+    }
+  </style>
+
+  <script>
+  
+    const rowAggregators = Bokeh.require(448); 
+  
+     class WeightedAvgAggregator extends rowAggregators.RowAggregator {
+      constructor() {
+	   const {numerator} = arguments[0];
+		delete arguments[0].numerator;
+        super(...arguments);
+        this.key = 'weightedAvg';
+        this.numerator = numerator;     
+
+        this.init = () => {
+          this.sumNumerator = null;
+          this.count = null;
+        };
+
+        this.accumulate = (item) => {
+          this.count += 1;
+          this.sumNumerator += item[this.numerator];
+        };
+
+        this.storeResult = (groupTotals) => {
+          if (!groupTotals.weightedAvg) {
+            groupTotals.weightedAvg = {};
+          }
+          groupTotals.weightedAvg[this.field_] = this.numerator ? this.sumNumerator / this.count : null;
+        };
+      }
+    }
+	
+	WeightedAvg.__name__ = 'WeightedAvg';
+	
+    $(document).ready(function() {
+      initializeBokehTable();
+    });
+
+    $(function () {
+      $("#sortable1, #sortable2").sortable({
+        connectWith: ".connectedSortable"
+      });
+
+      $("#sortable1").sortable({
+        start: function (event, ui) {},
+        receive: function (event, ui) { processData(); },
+        stop: function(e, ui) { processData(); },
+      });
+    });
+
+    let source;
+
+    function dragStarted(event) {
+      source = event.target;
+    }
+
+    function draggingOver(event) {
+      event.preventDefault();
+      event.dataTransfer.dropEffect = 'move';
+    }
+
+    function dropped(event) {
+      event.preventDefault();
+      event.stopPropagation();
+    }
+
+    
+
+    const widgets = {};
+    const cellEditor = new Bokeh.Tables.CellEditor();
+    const defaultPivots = ['Level1', 'Level2'];
+    const measureCols = ['BuyMV', 'SellMV', 'TotalMV'];
+    const pivots = {};
+    const riskformatterHundredths = new Bokeh.Tables.NumberFormatter({format:'-0,0.00'});
+    const pivotCols = {
+      Level1: 'Level1',
+      Level2: 'Level2',
+      Level3: 'Level3',
+      Level4: 'Level4',
+      Level5: 'Level5',
+      Level6: 'Level6',
+    };
+    const pivotReverseMap = {};
+
+    const createAggregators = () => {
+      return [
+        new WeightedAvg({field_: 'BuyMV', numerator: 'BuyMV'}),
+        new Bokeh.Tables.SumAggregator({field_: 'SellMV'}),
+        new Bokeh.Tables.SumAggregator({field_: 'TotalMV'})
+      ];
+    };
+
+    Object.entries(pivotCols).forEach(([colName, pivotName]) => {
+      pivots[colName] = new Bokeh.Tables.GroupingInfo({
+        getter: colName,
+        aggregators: createAggregators(),
+      });
+      pivotReverseMap[pivotName] = colName;
+    });
+
+    function defineEmptyCDS() {
+      const emptyCDS = {};
+      measureCols.forEach(col => emptyCDS[col] = [0]);
+      defaultPivots.forEach(col => emptyCDS[col] = ['']);
+      return emptyCDS;
+    }
+
+    function definePivotTable() {
+      const columns = [
+        new Bokeh.Tables.TableColumn({
+          field: 'Desc',
+          title: 'BreakDown',
+          sortable: false,
+          width: 200,
+          editor: cellEditor,
+        }),
+        new Bokeh.Tables.TableColumn({
+          field: 'BuyMV',
+          title: 'Column1',
+          formatter: riskformatterHundredths,
+          sortable: false,
+          width: 200,
+          editor: cellEditor,
+        }),
+        new Bokeh.Tables.TableColumn({
+          field: 'SellMV',
+          title: 'Column2',
+          sortable: false,
+          formatter: riskformatterHundredths,
+          width: 200,
+          editor: cellEditor,
+        }),
+        new Bokeh.Tables.TableColumn({
+          field: 'TotalMV',
+          title: 'Column3',
+          sortable: false,
+          formatter: riskformatterHundredths,
+          width: 200,
+          editor: cellEditor,
+        }),
+      ];
+
+      const target = new Bokeh.ColumnDataSource({
+        data: {
+          row_indices: [],
+          labels: [],
+        },
+        name: 'pivotTarget',
+      });
+
+      return new Bokeh.Tables.DataCube({
+        source: widgets.pivot,
+        name: 'Pivot',
+        columns,
+        grouping: defaultPivots.map(col => pivots[col]),
+        target,
+        width: columns.reduce((a, b) => a + b.width, 0),
+        height: 400,
+        sortable: false,
+      });
+    }
+
+    function initializeBokehTable() {
+      widgets.pivot = new Bokeh.ColumnDataSource({
+        name: 'cdsPivot',
+        data: defineEmptyCDS(),
+      });
+      widgets.pivotTable = definePivotTable();
+
+      const obj = new Bokeh.Column({
+        children: [
+          widgets.pivotTable,
+        ],
+      });
+
+      const doc = new Bokeh.Document();
+      doc.add_root(obj);
+
+      const root = document.getElementById('bokeh-table');
+      root.innerHTML = '';
+
+      Bokeh.embed.add_document_standalone(doc, root);
+      resetParam();
+    }
+
+    const sampleData = [
+      {
+        BuyMV: 1000,
+        SellMV: 800,
+        TotalMV: 1800,
+        Level1: 'Level1Value',
+        Level2: 'Level2Value',
+        Level3: 'Leve3Value',
+        Level4: 'Level4Value',
+        Level5: 'Level5alue',
+        Level6: 'Level6Value',
+      },
+      {
+        BuyMV: 1200,
+        SellMV: 1000,
+        TotalMV: 2200,
+        Level1: 'Level1Value',
+        Level2: 'Level2Value',
+        Level3: 'Level3Value',
+        Level4: 'Level4Value',
+        Level5: 'Level5alue',
+        Level6: 'Level6Value',
+      },
+      {
+        BuyMV: 800,
+        SellMV: 600,
+        TotalMV: 1400,
+        Level1: 'Level21Value',
+        Level2: 'Level22Value',
+        Level3: 'Level3Value',
+        Level4: 'Level4Value',
+        Level5: 'Level5alue',
+        Level6: 'Level6Value',
+      },
+      {
+        BuyMV: 1800,
+        SellMV: 700,
+        TotalMV: 1200,
+        Level1: 'Level31Value',
+        Level2: 'Level2Value',
+        Level3: 'Level3Value',
+        Level4: 'Level4Value',
+        Level5: 'Level5alue',
+        Level6: 'Level6Value',
+      },
+      // Add more objects as needed
+    ];
+
+  function processData() {
+      const outputObject = {};
+      sampleData.forEach(obj => {
+        Object.keys(obj).forEach(key => {
+          if (!outputObject[key]) {
+            outputObject[key] = [];
+          }
+          outputObject[key].push(obj[key]);
+        });
+      });
+
+      const currentPivots = getPivot();
+      widgets.pivot.data = outputObject;
+      widgets.pivotTable.grouping = currentPivots.map(col => pivots[col]);
+      widgets.pivot.properties.data.change.emit();
+      widgets.pivotTable.change.emit();
+    }
+
+    function resetParam() {
+      $("#sortable1").empty();
+      $("#sortable2").empty();
+
+      const ul1 = document.getElementById('sortable1');
+      const ul2 = document.getElementById('sortable2');
+
+      defaultPivots.forEach((col) => {
+        const li = document.createElement('li');
+        li.appendChild(document.createTextNode(pivotCols[col]));
+        ul1.appendChild(li);
+      });
+
+      Object.entries(pivotCols).forEach(([col, pivotName]) => {
+        if (!(defaultPivots.includes(col))) {
+          const li = document.createElement('li');
+          li.appendChild(document.createTextNode(pivotName));
+          ul2.appendChild(li);
+        }
+      });
+    }
+
+    function getPivot() {
+      const currentPivot = [];
+      const ul = document.getElementById("sortable1");
+      const items = ul.getElementsByTagName('li');
+      for(let i = 0; i < items.length; ++i) {
+        currentPivot.push(pivotReverseMap[items[i].innerText]);
+      }
+
+      return currentPivot;
+    }
+  </script>
+</head>
+<body>
+  <button onclick="processData()">Show Grid Data</button>
+  <table>
+    <tr>
+      <td>Available pivots</td>
+      <td>Pivots</td>
+      <td style="text-align: center;">Grid Data</td>
+    </tr>
+    <tr>
+      <td><ul id="sortable2" class="connectedSortable"></ul></td>
+      <td><ul id="sortable1" class="connectedSortable"></ul></td>
+      <td><div id="bokeh-table"></div></td>
+    </tr>
+  </table>
+</body>
+</html>
